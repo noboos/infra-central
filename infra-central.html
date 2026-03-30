@@ -432,7 +432,9 @@ let tokenClient = null;
 
 function handleGoogleSignIn(response) {
   const p = JSON.parse(atob(response.credential.split('.')[1]));
-  currentUser = { name: p.name, email: p.email, picture: p.picture, accessToken: null };
+  // Restore access token from session if available (survives hard refresh)
+  const savedToken = sessionStorage.getItem('ic_access_token');
+  currentUser = { name: p.name, email: p.email, picture: p.picture, accessToken: savedToken || null };
   completeLogin();
 }
 
@@ -444,10 +446,10 @@ function initGoogleOAuth() {
     callback: (r) => {
       if (r.access_token && currentUser) {
         currentUser.accessToken = r.access_token;
-        // Hide the grant button if visible
+        // Persist token for the duration of this browser session
+        sessionStorage.setItem('ic_access_token', r.access_token);
         const btn = document.getElementById('grant-btn');
         if (btn) btn.style.display = 'none';
-        // Sync all active tabs in background
         syncActiveTab(false);
       }
     },
@@ -497,7 +499,7 @@ function completeLogin() {
   tryToken();
 }
 
-function signOut() { currentUser = null; location.reload(); }
+function signOut() { currentUser = null; sessionStorage.removeItem('ic_access_token'); location.reload(); }
 
 function showGrantButton() {
   // Show a persistent button in the header if the token was never granted
@@ -664,12 +666,13 @@ function ensureAccessToken() {
     // Temporarily wrap the tokenClient callback to catch this token
     const original = tokenClient.callback;
     tokenClient.callback = (r) => {
-      if (r.access_token && currentUser) currentUser.accessToken = r.access_token;
-      // Hide grant button if visible
+      if (r.access_token && currentUser) {
+        currentUser.accessToken = r.access_token;
+        sessionStorage.setItem('ic_access_token', r.access_token);
+      }
       const btn = document.getElementById('grant-btn');
       if (btn) btn.style.display = 'none';
       if (!resolved) { resolved=true; clearTimeout(timeout); resolve(); }
-      // Restore original callback
       tokenClient.callback = original;
     };
     tokenClient.requestAccessToken({ prompt: '' });
@@ -694,19 +697,26 @@ async function writeResponseToRow(item, decision, category, comments) {
     const hData  = await hRes.json();
     let   headers = (hData.values?.[0] || []).map(h => h.toString().trim());
 
-    // ── Step 2: Ensure the 4 response columns exist ──────────────
+    // ── Step 2: Ensure the 5 response columns exist ──────────────
     const RESP_COLS = ['Decision', 'Decision By', 'Decision Date', 'Category / Reason', 'Comments'];
     const missing   = RESP_COLS.filter(c => !headers.includes(c));
     if (missing.length) {
-      // Append missing headers to the end of row 1
-      const newHeaders = [...headers, ...missing];
-      const writeRange = encodeURIComponent(`${sheetTab}!A1`);
-      await fetch(`${baseUrl}/values/${writeRange}?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
+      // Write only the missing headers into new columns at the end — never overwrite existing data
+      function colLetter(n) {
+        let s = '';
+        while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
+        return s;
+      }
+      const headerUpdates = missing.map((col, i) => ({
+        range: `${sheetTab}!${colLetter(headers.length + i + 1)}1`,
+        values: [[col]],
+      }));
+      await fetch(`${baseUrl}/values:batchUpdate`, {
+        method: 'POST',
         headers: authHdr,
-        body: JSON.stringify({ values: [newHeaders] }),
+        body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: headerUpdates }),
       });
-      headers = newHeaders;
+      headers = [...headers, ...missing];
     }
 
     // ── Step 3: Find the row number for this item ────────────────
@@ -720,22 +730,17 @@ async function writeResponseToRow(item, decision, category, comments) {
     if (!rowNum) throw new Error(`Row not found for ID: ${item._rowId}`);
 
     // ── Step 4: Write the 5 values into the correct row ──────────
-    const decIdx    = headers.indexOf('Decision')          + 1;
-    const byIdx     = headers.indexOf('Decision By')       + 1;
-    const dtIdx     = headers.indexOf('Decision Date')     + 1;
-    const catIdx    = headers.indexOf('Category / Reason') + 1;
-    const comIdx    = headers.indexOf('Comments')          + 1;
+    const decIdx = headers.indexOf('Decision')          + 1;
+    const byIdx  = headers.indexOf('Decision By')       + 1;
+    const dtIdx  = headers.indexOf('Decision Date')     + 1;
+    const catIdx = headers.indexOf('Category / Reason') + 1;
+    const comIdx = headers.indexOf('Comments')          + 1;
 
-    // Helper: column index (1-based) → A1 letter
-    function colLetter(n) {
-      let s = '';
-      while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
-      return s;
-    }
+    const now = new Date().toLocaleString('en-US', {
+      month:'short', day:'numeric', year:'numeric',
+      hour:'numeric', minute:'2-digit', hour12:true
+    });
 
-    const now = new Date().toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true });
-
-    // Build individual cell updates as a batch
     const cellUpdates = [
       { range: `${sheetTab}!${colLetter(decIdx)}${rowNum}`, values: [[decision]] },
       { range: `${sheetTab}!${colLetter(byIdx)}${rowNum}`,  values: [[currentUser.name]] },
@@ -909,11 +914,21 @@ function renderTable() {
       // Decision cell — show badge + reviewer + date if decided
       let decisionCell = '';
       if (resp) {
-        const dateStr = resp.timestamp ? new Date(resp.timestamp).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+        const dateStr = resp.timestamp
+          ? new Date(resp.timestamp).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+          : '';
+        const timeStr = resp.timestamp
+          ? new Date(resp.timestamp).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})
+          : '';
         decisionCell = `<td>
-          <div style="display:flex;flex-direction:column;gap:3px">
+          <div style="display:flex;flex-direction:column;gap:4px;min-width:140px">
             ${statusBadge(status)}
-            <span style="font-size:11px;color:var(--ink-3);font-family:'DM Mono',monospace;white-space:nowrap">${escHtml(resp.reviewer)} · ${dateStr}</span>
+            <span style="font-size:11px;color:var(--ink-2);white-space:nowrap">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style="vertical-align:-1px;margin-right:2px"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2"/><path d="M6 3.5v2.8l1.8 1.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>${dateStr} ${timeStr}
+            </span>
+            <span style="font-size:11px;color:var(--ink-3);white-space:nowrap">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style="vertical-align:-1px;margin-right:2px"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M4 6l1.5 1.5L8 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>${escHtml(resp.reviewer)}
+            </span>
           </div>
         </td>`;
       } else {
