@@ -247,12 +247,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.6;}
     <div class="setup-field">
       <label>Google Sheet ID</label>
       <input type="text" id="cfg-sheet-id" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms">
-      <div class="setup-hint">From the URL: docs.google.com/spreadsheets/d/<strong>[SHEET_ID]</strong>/edit</div>
-    </div>
-    <div class="setup-field">
-      <label>Responses tab name</label>
-      <input type="text" id="cfg-resp-tab" placeholder="Responses" value="Responses">
-      <div class="setup-hint">All decisions are written here: Timestamp · Reviewer · Tab · Row ID · Decision · Category · Comments</div>
+      <div class="setup-hint">From the URL: docs.google.com/spreadsheets/d/<strong>[SHEET_ID]</strong>/edit. Responses are written back to each item's own row.</div>
     </div>
     <div class="setup-footer">
       <span style="font-size:11px;color:var(--ink-3);font-family:'DM Mono',monospace">💡 Skip to use demo data</span>
@@ -656,18 +651,77 @@ async function syncActiveTab(silent=false) {
   icon.classList.remove('spinning');
 }
 
-async function appendResponseToSheet(rowId, decision, category, comments) {
+// Write response back to the item's own row in the sheet.
+// Ensures the 4 response columns exist in the header row, then writes to the correct row.
+async function writeResponseToRow(item, decision, category, comments) {
   const cfg = getConfig();
   if (!cfg.sheetId || !currentUser?.accessToken) return;
   const tab   = activeTab();
-  const range = encodeURIComponent(`${cfg.respTab||'Responses'}!A:G`);
+  const sheetTab = tab.sheetTab;
+  const authHdr  = { 'Authorization': `Bearer ${currentUser.accessToken}`, 'Content-Type': 'application/json' };
+  const baseUrl  = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}`;
+
   try {
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${range}:append?valueInputOption=USER_ENTERED`, {
-      method:'POST',
-      headers:{'Authorization':`Bearer ${currentUser.accessToken}`,'Content-Type':'application/json'},
-      body: JSON.stringify({ values:[[new Date().toISOString(), currentUser.email, tab.label, rowId, decision, category, comments]] })
+    // ── Step 1: Read current header row ──────────────────────────
+    const hRange = encodeURIComponent(`${sheetTab}!1:1`);
+    const hRes   = await fetch(`${baseUrl}/values/${hRange}`, { headers: authHdr });
+    if (!hRes.ok) throw new Error(`Header read failed: ${hRes.status}`);
+    const hData  = await hRes.json();
+    let   headers = (hData.values?.[0] || []).map(h => h.toString().trim());
+
+    // ── Step 2: Ensure the 4 response columns exist ──────────────
+    const RESP_COLS = ['Decision', 'Decision By', 'Category / Reason', 'Comments'];
+    const missing   = RESP_COLS.filter(c => !headers.includes(c));
+    if (missing.length) {
+      // Append missing headers to the end of row 1
+      const newHeaders = [...headers, ...missing];
+      const writeRange = encodeURIComponent(`${sheetTab}!A1`);
+      await fetch(`${baseUrl}/values/${writeRange}?valueInputOption=USER_ENTERED`, {
+        method: 'PUT',
+        headers: authHdr,
+        body: JSON.stringify({ values: [newHeaders] }),
+      });
+      headers = newHeaders;
+    }
+
+    // ── Step 3: Find the row number for this item ────────────────
+    // Read the first column (ID column) to find the matching row
+    const idCol   = encodeURIComponent(`${sheetTab}!A:A`);
+    const idRes   = await fetch(`${baseUrl}/values/${idCol}`, { headers: authHdr });
+    if (!idRes.ok) throw new Error(`Row lookup failed: ${idRes.status}`);
+    const idData  = await idRes.json();
+    const idVals  = (idData.values || []).map(r => (r[0]||'').toString().trim());
+    const rowNum  = idVals.indexOf(item._rowId) + 1; // 1-based; 0 = not found
+    if (!rowNum) throw new Error(`Row not found for ID: ${item._rowId}`);
+
+    // ── Step 4: Write the 4 values into the correct row ──────────
+    const decIdx    = headers.indexOf('Decision')         + 1; // 1-based col index
+    const byIdx     = headers.indexOf('Decision By')      + 1;
+    const catIdx    = headers.indexOf('Category / Reason')+ 1;
+    const comIdx    = headers.indexOf('Comments')         + 1;
+
+    // Helper: column index (1-based) → A1 letter
+    function colLetter(n) {
+      let s = '';
+      while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
+      return s;
+    }
+
+    // Build individual cell updates as a batch
+    const cellUpdates = [
+      { range: `${sheetTab}!${colLetter(decIdx)}${rowNum}`, values: [[decision]] },
+      { range: `${sheetTab}!${colLetter(byIdx)}${rowNum}`,  values: [[currentUser.name]] },
+      { range: `${sheetTab}!${colLetter(catIdx)}${rowNum}`, values: [[category]] },
+      { range: `${sheetTab}!${colLetter(comIdx)}${rowNum}`, values: [[comments]] },
+    ];
+
+    await fetch(`${baseUrl}/values:batchUpdate`, {
+      method: 'POST',
+      headers: authHdr,
+      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: cellUpdates }),
     });
-  } catch(e) { console.warn('Sheet write failed:',e); }
+
+  } catch(e) { console.warn('Sheet write failed:', e); }
 }
 
 // ═══════════════════════════════════════════
@@ -928,7 +982,7 @@ async function submitReview() {
   const record = { decision:panelDecision, category, comments, reviewer:currentUser?.name||'Unknown', email:currentUser?.email||'unknown', timestamp:new Date().toISOString(), rowId:currentItem._rowId, tabId:activeTabId };
   responses[rKey(record.email, activeTabId, record.rowId)] = record;
   localStorage.setItem(RESP_KEY, JSON.stringify(responses));
-  await appendResponseToSheet(currentItem._rowId, panelDecision, category, comments);
+  await writeResponseToRow(currentItem, panelDecision, category, comments);
   renderAll();
   closePanel();
   showToast(`✓ ${currentItem._rowId} marked ${panelDecision}`, 'success');
