@@ -117,11 +117,11 @@ th:hover{color:var(--ink-2);}
 tbody tr{border-bottom:1px solid var(--border);transition:background 0.1s;cursor:pointer;}
 tbody tr:last-child{border-bottom:none;}
 tbody tr:hover{background:var(--paper-2);}
-tbody tr.reviewed{background:rgba(26,102,68,0.02);}
-tbody tr.rejected-row{background:rgba(153,31,31,0.02);}
-tbody tr.excepted{background:rgba(90,58,140,0.02);}
+tbody tr.decided{background:var(--paper-2);opacity:0.6;}
+tbody tr.decided:hover{opacity:0.8;}
+tbody tr.decided td:not(:last-child){color:var(--ink-3);}
 td{padding:11px 14px;vertical-align:middle;color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-td:last-child{white-space:nowrap;width:1%;vertical-align:top;padding-top:12px;}
+td:last-child{white-space:nowrap;width:1%;vertical-align:top;padding-top:12px;opacity:1!important;}
 
 /* BADGES */
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:3px 8px;border-radius:999px;font-family:'DM Mono',monospace;white-space:nowrap;}
@@ -652,13 +652,21 @@ function renderAll() {
   updateTabCounts();
 }
 
+// Columns to exclude from sidebar filters entirely
+const RESP_COLS_SET = new Set(['Decision','Decision By','Decision Date','Category / Reason','Comments']);
+// Column names that map to "Owner" — pinned to second position in sidebar
+const OWNER_COL_NAMES = new Set(['owner','owners','assignee','assigned to','assigned_to']);
+
+function isOwnerCol(h) { return OWNER_COL_NAMES.has(h.toLowerCase()); }
+
 // Columns suitable for sidebar filtering:
-// ≥2 unique values, ≤25 unique values, not all rows unique
+// ≥2 unique values, ≤25 unique values, not all rows unique, not a response col
 function filterableCols() {
   const headers = activeHeaders();
   const items   = activeItems();
   if (!headers.length || !items.length) return [];
   return headers.filter(h => {
+    if (RESP_COLS_SET.has(h)) return false;
     const vals = [...new Set(items.map(i => (i[h]||'').trim()).filter(Boolean))];
     return vals.length >= 2 && vals.length <= 25 && vals.length < items.length;
   });
@@ -667,24 +675,50 @@ function filterableCols() {
 function renderDynamicFilters() {
   const container = document.getElementById('dynamic-filters');
   container.innerHTML = '';
-  filterableCols().forEach(col => {
+  const allCols = filterableCols();
+
+  // Separate owner col from the rest
+  const ownerCol  = allCols.find(h => isOwnerCol(h));
+  const otherCols = allCols.filter(h => !isOwnerCol(h));
+
+  // Render in order: Owner first, then remaining sheet columns
+  const orderedCols = [
+    ...(ownerCol ? [ownerCol] : []),
+    ...otherCols,
+  ];
+
+  orderedCols.forEach(col => {
     const items   = activeItems();
     const vals    = [...new Set(items.map(i=>(i[col]||'').trim()).filter(Boolean))].sort();
     const sel     = colFilters[col] || null;
-    const wrap    = document.createElement('div');
+
+    const wrap = document.createElement('div');
     wrap.innerHTML = `<hr class="sidebar-divider">`;
     const sec = document.createElement('div');
     sec.className = 'sidebar-section';
-    sec.innerHTML = `<div class="sidebar-label">${escHtml(col)}</div>`;
+
+    // Use friendly label for owner column
+    const label = isOwnerCol(col) ? 'Owner' : col;
+    sec.innerHTML = `<div class="sidebar-label">${escHtml(label)}</div>`;
+
     vals.forEach(val => {
-      const cnt     = items.filter(i=>(i[col]||'').trim()===val).length;
-      const isActive= sel===val;
-      const color   = getColor(val);
-      const chip    = document.createElement('div');
-      chip.className= 'filter-chip'+(isActive?' active':'');
+      const cnt      = items.filter(i=>(i[col]||'').trim()===val).length;
+      const isActive = sel === val;
+      const color    = getColor(val);
+      const chip     = document.createElement('div');
+      chip.className = 'filter-chip'+(isActive?' active':'');
       if (isActive) chip.style.cssText=`background:${hexAlpha(color,0.1)};border-color:${hexAlpha(color,0.28)};color:${color}`;
-      chip.innerHTML= `<span style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:2px;background:${color};flex-shrink:0;display:inline-block"></span>${escHtml(val)}</span><span class="count" style="${isActive?`background:${hexAlpha(color,0.12)};color:${color}`:''}">${cnt}</span>`;
-      chip.onclick  = () => { colFilters[col]=(colFilters[col]===val)?null:val; if(!colFilters[col]) delete colFilters[col]; page=0; renderAll(); };
+      chip.innerHTML = `
+        <span style="display:flex;align-items:center;gap:6px">
+          <span style="width:7px;height:7px;border-radius:2px;background:${color};flex-shrink:0;display:inline-block"></span>
+          ${escHtml(val)}
+        </span>
+        <span class="count" style="${isActive?`background:${hexAlpha(color,0.12)};color:${color}`:''}">${cnt}</span>`;
+      chip.onclick = () => {
+        colFilters[col] = (colFilters[col]===val) ? null : val;
+        if (!colFilters[col]) delete colFilters[col];
+        page=0; renderAll();
+      };
       sec.appendChild(chip);
     });
     wrap.appendChild(sec);
@@ -693,7 +727,6 @@ function renderDynamicFilters() {
 }
 
 function renderTableHeader() {
-  const RESP_COLS_SET = new Set(['Decision','Decision By','Decision Date','Category / Reason','Comments']);
   const headers = activeHeaders().filter(h => !RESP_COLS_SET.has(h));
   const tr = document.querySelector('#table-head tr');
   if (!tr) return;
@@ -753,8 +786,6 @@ function renderTable() {
   const slice    = items.slice(start, start+PAGE_SIZE);
   const tbody    = document.getElementById('table-body');
   const fCols    = filterableCols();
-  // Filter out the 5 response columns from the table — they show in the panel instead
-  const RESP_COLS_SET = new Set(['Decision','Decision By','Decision Date','Category / Reason','Comments']);
   const displayHeaders = headers.filter(h => !RESP_COLS_SET.has(h));
   tbody.innerHTML = '';
   const colCount = Math.max(displayHeaders.length, 1) + 1;
@@ -766,16 +797,14 @@ function renderTable() {
       const status = getStatus(item._rowId);
       const resp   = getMyResponse(item._rowId);
       const tr = document.createElement('tr');
-      if (status==='Approved')  tr.classList.add('reviewed');
-      if (status==='Rejected')  tr.classList.add('rejected-row');
-      if (status==='Exception') tr.classList.add('excepted');
+      if (resp) tr.classList.add('decided');
       tr.onclick = () => openPanel(item._rowId);
 
       let cells = '';
       if (displayHeaders.length) {
         cells = displayHeaders.map(h => {
           const val = item[h] || '';
-          if (fCols.includes(h) && val) {
+          if (fCols.includes(h) && val && !resp) {
             const c = getColor(val);
             return `<td><span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:4px;background:${hexAlpha(c,0.1)};border:1px solid ${hexAlpha(c,0.22)};color:${c};font-weight:500;white-space:nowrap"><span style="width:6px;height:6px;border-radius:2px;background:${c};flex-shrink:0;display:inline-block"></span>${escHtml(val)}</span></td>`;
           }
