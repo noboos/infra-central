@@ -1001,9 +1001,14 @@ async function submitReview() {
   if (!panelDecision) { showToast('Please choose Approve, Reject, or Exception.','error'); return; }
   const btn=document.getElementById('submit-btn');
   btn.disabled=true; btn.textContent='Saving…';
+
+  // Capture all values immediately — currentItem can become null after async awaits
+  const item     = currentItem;
+  const decision = panelDecision;
   const category = document.getElementById('field-category').value;
   const comments  = document.getElementById('field-comments').value.trim();
-  const record = { decision:panelDecision, category, comments, reviewer:currentUser?.name||'Unknown', email:currentUser?.email||'unknown', timestamp:new Date().toISOString(), rowId:currentItem._rowId, tabId:activeTabId };
+
+  const record = { decision, category, comments, reviewer:currentUser?.name||'Unknown', email:currentUser?.email||'unknown', timestamp:new Date().toISOString(), rowId:item._rowId, tabId:activeTabId };
   responses[rKey(record.email, activeTabId, record.rowId)] = record;
   localStorage.setItem(RESP_KEY, JSON.stringify(responses));
 
@@ -1011,12 +1016,11 @@ async function submitReview() {
   await ensureAccessToken();
 
   if (currentUser?.accessToken) {
-    await writeResponseToRow(currentItem, panelDecision, category, comments);
+    await writeResponseToRow(item, decision, category, comments);
     renderAll();
     closePanel();
-    showToast(`✓ ${currentItem._rowId} marked ${panelDecision} — saved to sheet`, 'success');
+    showToast(`✓ ${item._rowId} marked ${decision} — saved to sheet`, 'success');
   } else {
-    // No token — saved locally only, warn user
     renderAll();
     closePanel();
     showToast(`✓ Saved locally. Grant Sheets access to sync to the sheet.`, '');
