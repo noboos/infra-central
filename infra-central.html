@@ -430,21 +430,17 @@ function closeSetup() { document.getElementById('setup-modal').classList.remove(
 let currentUser = null;
 let tokenClient = null;
 
-function handleGoogleSignIn(response) {
-  const p = JSON.parse(atob(response.credential.split('.')[1]));
-  const savedToken = sessionStorage.getItem('ic_access_token');
-  currentUser = { name: p.name, email: p.email, picture: p.picture, accessToken: savedToken || null };
-  console.log('[Auth] Signed in as', p.email, '| saved token:', savedToken ? 'YES' : 'NO');
-  completeLogin();
-}
-
 function initGoogleOAuth() {
   if (!window.google?.accounts?.oauth2) return;
-  if (tokenClient) return; // already initialized
+  if (tokenClient) return;
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: HARDCODED_CLIENT_ID,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
+    // Use fragment redirect instead of popup to avoid COOP/postMessage blocking on GitHub Pages
+    ux_mode: 'redirect',
+    redirect_uri: window.location.href.split('?')[0].split('#')[0],
     callback: (r) => {
+      // This fires in redirect mode after the page reloads with the token in the URL hash
       console.log('[Auth] Token callback fired, access_token:', r.access_token ? 'received' : 'missing', 'error:', r.error);
       if (r.access_token && currentUser) {
         currentUser.accessToken = r.access_token;
@@ -459,7 +455,7 @@ function initGoogleOAuth() {
       }
     },
   });
-  console.log('[Auth] tokenClient initialized');
+  console.log('[Auth] tokenClient initialized (redirect mode)');
 }
 
 function loginDemo() {
@@ -483,51 +479,62 @@ function completeLogin() {
 
   if (currentUser.demo) return;
 
-  // Already have a token — use it directly, no popup needed
+  // Already have a token — use it directly
   if (currentUser.accessToken) {
     console.log('[Auth] Token already available, skipping OAuth prompt');
     syncActiveTab(false);
     return;
   }
 
-  // Need to get a token — wait for tokenClient to be ready then request silently
-  console.log('[Auth] No token yet, requesting...');
-  let attempts = 0;
-  const tryToken = () => {
-    // Make sure tokenClient is initialized
-    initGoogleOAuth();
-    if (tokenClient) {
-      console.log('[Auth] Requesting token with prompt:""');
-      tokenClient.requestAccessToken({ prompt: '' });
-    } else if (attempts++ < 30) {
-      setTimeout(tryToken, 200);
-    } else {
-      console.warn('[Auth] tokenClient never ready after 6s');
-      showGrantButton();
-    }
-  };
-  tryToken();
+  // Need a token — use implicit flow via URL hash redirect
+  console.log('[Auth] No token, using implicit flow redirect...');
+  // Save user info so we can restore it after the redirect
+  sessionStorage.setItem('ic_pending_user', JSON.stringify({
+    name: currentUser.name, email: currentUser.email, picture: currentUser.picture
+  }));
+  // Build the OAuth URL manually for implicit (token) flow
+  const params = new URLSearchParams({
+    client_id: HARDCODED_CLIENT_ID,
+    redirect_uri: window.location.href.split('?')[0].split('#')[0],
+    response_type: 'token',
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    prompt: 'none', // silent — won't show UI if already granted
+  });
+  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
 function signOut() {
   currentUser = null;
   sessionStorage.removeItem('ic_access_token');
+  sessionStorage.removeItem('ic_pending_user');
   location.reload();
 }
 
 function showGrantButton() {
-  // Show a persistent button in the header if the token was never granted
   if (document.getElementById('grant-btn')) return;
   const btn = document.createElement('button');
   btn.id = 'grant-btn';
   btn.className = 'btn-ghost';
   btn.style.cssText = 'background:var(--accent-light);border-color:var(--accent);color:var(--accent);font-weight:500;';
   btn.textContent = '🔑 Grant Sheets access';
-  btn.onclick = () => {
-    if (tokenClient) tokenClient.requestAccessToken({ prompt: 'consent' });
-    else showToast('Google API not ready yet — try refreshing.', 'error');
-  };
+  btn.onclick = () => requestSheetsAccessViaRedirect();
   document.querySelector('.header-right').prepend(btn);
+}
+
+function requestSheetsAccessViaRedirect() {
+  if (currentUser) {
+    sessionStorage.setItem('ic_pending_user', JSON.stringify({
+      name: currentUser.name, email: currentUser.email, picture: currentUser.picture
+    }));
+  }
+  const params = new URLSearchParams({
+    client_id: HARDCODED_CLIENT_ID,
+    redirect_uri: window.location.href.split('?')[0].split('#')[0],
+    response_type: 'token',
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    prompt: 'consent',
+  });
+  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
 // ═══════════════════════════════════════════
@@ -1112,6 +1119,29 @@ function formatDate(d) { if(!d) return '—'; try { return new Date(d).toLocaleD
 // ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
+
+// Called by Google GSI after identity sign-in
+function handleGoogleSignIn(response) {
+  const p = JSON.parse(atob(response.credential.split('.')[1]));
+  const savedToken = sessionStorage.getItem('ic_access_token');
+  currentUser = { name: p.name, email: p.email, picture: p.picture, accessToken: savedToken || null };
+  console.log('[Auth] Signed in as', p.email, '| saved token:', savedToken ? 'YES' : 'NO');
+  completeLogin();
+}
+
+// Parse access_token from URL hash after implicit OAuth redirect
+function parseTokenFromHash() {
+  const hash = window.location.hash.substring(1);
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  const token  = params.get('access_token');
+  if (token) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    return token;
+  }
+  return null;
+}
+
 window.addEventListener('load', () => {
   document.getElementById('g_id_onload').setAttribute('data-client_id', HARDCODED_CLIENT_ID);
   document.getElementById('config-banner').style.display = 'none';
@@ -1119,6 +1149,31 @@ window.addEventListener('load', () => {
   const cfg = getConfig();
   if (!cfg.clientId) localStorage.setItem(CFG_KEY, JSON.stringify({ ...cfg, clientId: HARDCODED_CLIENT_ID }));
 
+  // ── Check if we're returning from an implicit OAuth redirect ──
+  const hashToken = parseTokenFromHash();
+  if (hashToken) {
+    sessionStorage.setItem('ic_access_token', hashToken);
+    console.log('[Auth] Got token from redirect hash, saved to sessionStorage');
+    // Restore the pending user who triggered the redirect
+    const pendingUser = sessionStorage.getItem('ic_pending_user');
+    if (pendingUser) {
+      try {
+        currentUser = { ...JSON.parse(pendingUser), accessToken: hashToken };
+        sessionStorage.removeItem('ic_pending_user');
+        console.log('[Auth] Restored user from pending session:', currentUser.email);
+        // Skip login screen, go straight to app
+        const tryInit2 = () => {
+          if (!window.google?.accounts) { setTimeout(tryInit2, 100); return; }
+          initGoogleOAuth();
+          completeLoginDirect();
+        };
+        tryInit2();
+        return;
+      } catch(e) { console.warn('Could not restore pending user', e); }
+    }
+  }
+
+  // ── Normal load — initialize GSI ──
   const tryInit = () => {
     if (!window.google?.accounts) return;
     google.accounts.id.initialize({ client_id: HARDCODED_CLIENT_ID, callback: handleGoogleSignIn });
@@ -1128,6 +1183,19 @@ window.addEventListener('load', () => {
   if (window.google?.accounts) tryInit();
   else { const s=document.querySelector('script[src*="gsi/client"]'); if(s) s.addEventListener('load', tryInit); }
 });
+
+// Complete login without going through the login screen (used after redirect return)
+function completeLoginDirect() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  document.getElementById('user-name-display').textContent = currentUser.name;
+  document.getElementById('footer-user-name').textContent  = currentUser.name;
+  document.getElementById('user-avatar-fallback').textContent = currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  initTabs();
+  loadTabData(activeTabId);
+  syncActiveTab(false);
+  showToast('✓ Sheets access granted — data syncing', 'success');
+}
 </script>
 </body>
 </html>
