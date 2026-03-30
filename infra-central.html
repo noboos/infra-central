@@ -448,6 +448,10 @@ function initGoogleOAuth() {
     callback: (r) => {
       if (r.access_token && currentUser) {
         currentUser.accessToken = r.access_token;
+        // Hide the grant button if visible
+        const btn = document.getElementById('grant-btn');
+        if (btn) btn.style.display = 'none';
+        // Sync all active tabs in background
         syncActiveTab(false);
       }
     },
@@ -457,6 +461,14 @@ function initGoogleOAuth() {
 function loginDemo() {
   currentUser = { name: 'Demo User', email: 'demo@local', picture: null, demo: true };
   completeLogin();
+}
+
+function requestSheetsToken() {
+  // Use prompt:'' first — silently reuses existing grant if already approved
+  // Falls back to showing consent UI if not yet granted
+  if (tokenClient) {
+    tokenClient.requestAccessToken({ prompt: '' });
+  }
 }
 
 function completeLogin() {
@@ -472,11 +484,39 @@ function completeLogin() {
   }
   initTabs();
   loadTabData(activeTabId);
-  if (tokenClient) tokenClient.requestAccessToken({ prompt: 'consent' });
-  else { initGoogleOAuth(); if (tokenClient) tokenClient.requestAccessToken({ prompt: 'consent' }); }
+
+  // Request Sheets token — retry until tokenClient is ready (GSI loads async)
+  let attempts = 0;
+  const tryToken = () => {
+    if (currentUser?.demo) return; // skip for demo mode
+    if (tokenClient) {
+      requestSheetsToken();
+    } else if (attempts++ < 20) {
+      setTimeout(tryToken, 300); // retry every 300ms, up to 6 seconds
+    } else {
+      // tokenClient never became ready — show manual grant button
+      showGrantButton();
+    }
+  };
+  tryToken();
 }
 
 function signOut() { currentUser = null; location.reload(); }
+
+function showGrantButton() {
+  // Show a persistent button in the header if the token was never granted
+  if (document.getElementById('grant-btn')) return;
+  const btn = document.createElement('button');
+  btn.id = 'grant-btn';
+  btn.className = 'btn-ghost';
+  btn.style.cssText = 'background:var(--accent-light);border-color:var(--accent);color:var(--accent);font-weight:500;';
+  btn.textContent = '🔑 Grant Sheets access';
+  btn.onclick = () => {
+    if (tokenClient) tokenClient.requestAccessToken({ prompt: 'consent' });
+    else showToast('Google API not ready yet — try refreshing.', 'error');
+  };
+  document.querySelector('.header-right').prepend(btn);
+}
 
 // ═══════════════════════════════════════════
 // STATE
@@ -582,8 +622,9 @@ async function syncActiveTab(silent=false) {
     if (currentUser?.accessToken) hdrs['Authorization'] = `Bearer ${currentUser.accessToken}`;
     else {
       if (!silent) {
-        if (tokenClient) { tokenClient.requestAccessToken({prompt:'consent'}); showToast('Please allow Sheets access in the popup, then sync again.',''); }
-        else showToast('Sign in with Google to sync.','error');
+        showGrantButton();
+        if (tokenClient) tokenClient.requestAccessToken({ prompt: 'consent' });
+        else showToast('Sign in with Google to sync.', 'error');
       }
       icon.classList.remove('spinning'); return;
     }
