@@ -427,37 +427,14 @@ function openSetup() {
 function closeSetup() { document.getElementById('setup-modal').classList.remove('open'); }
 
 // ═══════════════════════════════════════════
-// AUTH
+// AUTH — identity only, writes via Apps Script
 // ═══════════════════════════════════════════
 let currentUser = null;
-let tokenClient = null;
 
-function initGoogleOAuth() {
-  if (!window.google?.accounts?.oauth2) return;
-  if (tokenClient) return;
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: HARDCODED_CLIENT_ID,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    // Use fragment redirect instead of popup to avoid COOP/postMessage blocking on GitHub Pages
-    ux_mode: 'redirect',
-    redirect_uri: REDIRECT_URI,
-    callback: (r) => {
-      // This fires in redirect mode after the page reloads with the token in the URL hash
-      console.log('[Auth] Token callback fired, access_token:', r.access_token ? 'received' : 'missing', 'error:', r.error);
-      if (r.access_token && currentUser) {
-        currentUser.accessToken = r.access_token;
-        sessionStorage.setItem('ic_access_token', r.access_token);
-        console.log('[Auth] Token saved to sessionStorage');
-        const btn = document.getElementById('grant-btn');
-        if (btn) btn.style.display = 'none';
-        syncActiveTab(false);
-      } else if (r.error) {
-        console.warn('[Auth] Token error:', r.error);
-        showGrantButton();
-      }
-    },
-  });
-  console.log('[Auth] tokenClient initialized (redirect mode)');
+function handleGoogleSignIn(response) {
+  const p = JSON.parse(atob(response.credential.split('.')[1]));
+  currentUser = { name: p.name, email: p.email, picture: p.picture };
+  completeLogin();
 }
 
 function loginDemo() {
@@ -478,66 +455,9 @@ function completeLogin() {
   }
   initTabs();
   loadTabData(activeTabId);
-
-  if (currentUser.demo) return;
-
-  // Already have a token — use it directly
-  if (currentUser.accessToken) {
-    console.log('[Auth] Token already available, skipping OAuth prompt');
-    syncActiveTab(false);
-    return;
-  }
-
-  // Need a token — use implicit flow via URL hash redirect
-  console.log('[Auth] No token, using implicit flow redirect...');
-  // Save user info so we can restore it after the redirect
-  sessionStorage.setItem('ic_pending_user', JSON.stringify({
-    name: currentUser.name, email: currentUser.email, picture: currentUser.picture
-  }));
-  // Build the OAuth URL manually for implicit (token) flow
-  const params = new URLSearchParams({
-    client_id: HARDCODED_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: 'token',
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    prompt: 'none',
-  });
-  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
-function signOut() {
-  currentUser = null;
-  sessionStorage.removeItem('ic_access_token');
-  sessionStorage.removeItem('ic_pending_user');
-  location.reload();
-}
-
-function showGrantButton() {
-  if (document.getElementById('grant-btn')) return;
-  const btn = document.createElement('button');
-  btn.id = 'grant-btn';
-  btn.className = 'btn-ghost';
-  btn.style.cssText = 'background:var(--accent-light);border-color:var(--accent);color:var(--accent);font-weight:500;';
-  btn.textContent = '🔑 Grant Sheets access';
-  btn.onclick = () => requestSheetsAccessViaRedirect();
-  document.querySelector('.header-right').prepend(btn);
-}
-
-function requestSheetsAccessViaRedirect() {
-  if (currentUser) {
-    sessionStorage.setItem('ic_pending_user', JSON.stringify({
-      name: currentUser.name, email: currentUser.email, picture: currentUser.picture
-    }));
-  }
-  const params = new URLSearchParams({
-    client_id: HARDCODED_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: 'token',
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    prompt: 'consent',
-  });
-  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-}
+function signOut() { currentUser = null; location.reload(); }
 
 // ═══════════════════════════════════════════
 // STATE
@@ -641,14 +561,7 @@ async function syncActiveTab(silent=false) {
     const url   = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${range}`;
     const hdrs  = {};
     if (currentUser?.accessToken) hdrs['Authorization'] = `Bearer ${currentUser.accessToken}`;
-    else {
-      if (!silent) {
-        showGrantButton();
-        if (tokenClient) tokenClient.requestAccessToken({ prompt: 'consent' });
-        else showToast('Sign in with Google to sync.', 'error');
-      }
-      icon.classList.remove('spinning'); return;
-    }
+    else { icon.classList.remove('spinning'); return; } // no token — skip silently
     const res = await fetch(url, { headers: hdrs });
     if (!res.ok) throw new Error(`Sheets API ${res.status}`);
     const data     = await res.json();
@@ -677,36 +590,8 @@ async function syncActiveTab(silent=false) {
   icon.classList.remove('spinning');
 }
 
-// Returns a promise that resolves once we have an access token (or times out after 15s)
-function ensureAccessToken() {
-  return new Promise((resolve) => {
-    // Restore from sessionStorage if currentUser lost it
-    if (!currentUser?.accessToken) {
-      const saved = sessionStorage.getItem('ic_access_token');
-      if (saved && currentUser) currentUser.accessToken = saved;
-    }
-    // If we now have a token, done — do NOT call requestAccessToken again
-    if (currentUser?.accessToken) { resolve(); return; }
-    // No token at all — request one
-    if (!tokenClient) { resolve(); return; }
-    let resolved = false;
-    const timeout = setTimeout(() => { if (!resolved) { resolved=true; resolve(); } }, 15000);
-    const original = tokenClient.callback;
-    tokenClient.callback = (r) => {
-      if (r.access_token && currentUser) {
-        currentUser.accessToken = r.access_token;
-        sessionStorage.setItem('ic_access_token', r.access_token);
-      }
-      const btn = document.getElementById('grant-btn');
-      if (btn) btn.style.display = 'none';
-      if (!resolved) { resolved=true; clearTimeout(timeout); resolve(); }
-      tokenClient.callback = original;
-    };
-    tokenClient.requestAccessToken({ prompt: '' });
-  });
-}
 
-const REDIRECT_URI = 'https://noboos.github.io/infra-central/infra-central.html';
+// ─── Apps Script write helper ───────────────
 function colLetter(n) {
   let s = '';
   while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
@@ -1060,83 +945,18 @@ function formatDate(d) { if(!d) return '—'; try { return new Date(d).toLocaleD
 // ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
-
-// Called by Google GSI after identity sign-in
-function handleGoogleSignIn(response) {
-  const p = JSON.parse(atob(response.credential.split('.')[1]));
-  const savedToken = sessionStorage.getItem('ic_access_token');
-  currentUser = { name: p.name, email: p.email, picture: p.picture, accessToken: savedToken || null };
-  console.log('[Auth] Signed in as', p.email, '| saved token:', savedToken ? 'YES' : 'NO');
-  completeLogin();
-}
-
-// Parse access_token from URL hash after implicit OAuth redirect
-function parseTokenFromHash() {
-  const hash = window.location.hash.substring(1);
-  if (!hash) return null;
-  const params = new URLSearchParams(hash);
-  const token  = params.get('access_token');
-  if (token) {
-    history.replaceState(null, '', window.location.pathname + window.location.search);
-    return token;
-  }
-  return null;
-}
-
 window.addEventListener('load', () => {
   document.getElementById('g_id_onload').setAttribute('data-client_id', HARDCODED_CLIENT_ID);
   document.getElementById('config-banner').style.display = 'none';
 
-  const cfg = getConfig();
-  if (!cfg.clientId) localStorage.setItem(CFG_KEY, JSON.stringify({ ...cfg, clientId: HARDCODED_CLIENT_ID }));
-
-  // ── Check if we're returning from an implicit OAuth redirect ──
-  const hashToken = parseTokenFromHash();
-  if (hashToken) {
-    sessionStorage.setItem('ic_access_token', hashToken);
-    console.log('[Auth] Got token from redirect hash, saved to sessionStorage');
-    // Restore the pending user who triggered the redirect
-    const pendingUser = sessionStorage.getItem('ic_pending_user');
-    if (pendingUser) {
-      try {
-        currentUser = { ...JSON.parse(pendingUser), accessToken: hashToken };
-        sessionStorage.removeItem('ic_pending_user');
-        console.log('[Auth] Restored user from pending session:', currentUser.email);
-        // Skip login screen, go straight to app
-        const tryInit2 = () => {
-          if (!window.google?.accounts) { setTimeout(tryInit2, 100); return; }
-          initGoogleOAuth();
-          completeLoginDirect();
-        };
-        tryInit2();
-        return;
-      } catch(e) { console.warn('Could not restore pending user', e); }
-    }
-  }
-
-  // ── Normal load — initialize GSI ──
   const tryInit = () => {
     if (!window.google?.accounts) return;
     google.accounts.id.initialize({ client_id: HARDCODED_CLIENT_ID, callback: handleGoogleSignIn });
     google.accounts.id.renderButton(document.querySelector('.g_id_signin'), { type:'standard', size:'large', theme:'outline', text:'sign_in_with', shape:'rectangular', logo_alignment:'left', width:280 });
-    initGoogleOAuth();
   };
   if (window.google?.accounts) tryInit();
   else { const s=document.querySelector('script[src*="gsi/client"]'); if(s) s.addEventListener('load', tryInit); }
 });
-
-// Complete login without going through the login screen (used after redirect return)
-function completeLoginDirect() {
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('app').style.display = 'flex';
-  document.getElementById('user-name-display').textContent = currentUser.name;
-  document.getElementById('footer-user-name').textContent  = currentUser.name;
-  document.getElementById('user-avatar-fallback').textContent = currentUser.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-  initTabs();
-  loadTabData(activeTabId);
-  syncActiveTab(false);
-  showToast('✓ Sheets access granted — data syncing', 'success');
-}
 </script>
 </body>
 </html>
