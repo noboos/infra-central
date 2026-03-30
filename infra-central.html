@@ -651,6 +651,30 @@ async function syncActiveTab(silent=false) {
   icon.classList.remove('spinning');
 }
 
+// Returns a promise that resolves once we have an access token (or times out after 15s)
+function ensureAccessToken() {
+  return new Promise((resolve) => {
+    if (currentUser?.accessToken) { resolve(); return; }
+    if (!tokenClient) { resolve(); return; } // can't get token, resolve anyway
+
+    let resolved = false;
+    const timeout = setTimeout(() => { if (!resolved) { resolved=true; resolve(); } }, 15000);
+
+    // Temporarily wrap the tokenClient callback to catch this token
+    const original = tokenClient.callback;
+    tokenClient.callback = (r) => {
+      if (r.access_token && currentUser) currentUser.accessToken = r.access_token;
+      // Hide grant button if visible
+      const btn = document.getElementById('grant-btn');
+      if (btn) btn.style.display = 'none';
+      if (!resolved) { resolved=true; clearTimeout(timeout); resolve(); }
+      // Restore original callback
+      tokenClient.callback = original;
+    };
+    tokenClient.requestAccessToken({ prompt: '' });
+  });
+}
+
 // Write response back to the item's own row in the sheet.
 // Ensures the 4 response columns exist in the header row, then writes to the correct row.
 async function writeResponseToRow(item, decision, category, comments) {
@@ -982,10 +1006,23 @@ async function submitReview() {
   const record = { decision:panelDecision, category, comments, reviewer:currentUser?.name||'Unknown', email:currentUser?.email||'unknown', timestamp:new Date().toISOString(), rowId:currentItem._rowId, tabId:activeTabId };
   responses[rKey(record.email, activeTabId, record.rowId)] = record;
   localStorage.setItem(RESP_KEY, JSON.stringify(responses));
-  await writeResponseToRow(currentItem, panelDecision, category, comments);
-  renderAll();
-  closePanel();
-  showToast(`✓ ${currentItem._rowId} marked ${panelDecision}`, 'success');
+
+  // Ensure we have a valid access token before writing to sheet
+  await ensureAccessToken();
+
+  if (currentUser?.accessToken) {
+    await writeResponseToRow(currentItem, panelDecision, category, comments);
+    renderAll();
+    closePanel();
+    showToast(`✓ ${currentItem._rowId} marked ${panelDecision} — saved to sheet`, 'success');
+  } else {
+    // No token — saved locally only, warn user
+    renderAll();
+    closePanel();
+    showToast(`✓ Saved locally. Grant Sheets access to sync to the sheet.`, '');
+    showGrantButton();
+  }
+
   btn.disabled=false;
   btn.innerHTML='Save response <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><path d="M2 6.5h9M7.5 3l3.5 3.5L7.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 }
