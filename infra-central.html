@@ -683,8 +683,15 @@ function ensureAccessToken() {
   });
 }
 
+// Helper: 1-based column index → A1 column letter (e.g. 1→A, 27→AA)
+function colLetter(n) {
+  let s = '';
+  while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
+  return s;
+}
+
 // Write response back to the item's own row in the sheet.
-// Ensures the 4 response columns exist in the header row, then writes to the correct row.
+// Ensures the 5 response columns exist in the header row, then writes to the correct row.
 async function writeResponseToRow(item, decision, category, comments) {
   const cfg = getConfig();
   if (!cfg.sheetId || !currentUser?.accessToken) return;
@@ -692,13 +699,6 @@ async function writeResponseToRow(item, decision, category, comments) {
   const sheetTab = tab.sheetTab;
   const authHdr  = { 'Authorization': `Bearer ${currentUser.accessToken}`, 'Content-Type': 'application/json' };
   const baseUrl  = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}`;
-
-  // Helper: 1-based column index → A1 column letter (e.g. 1→A, 27→AA)
-  function colLetter(n) {
-    let s = '';
-    while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
-    return s;
-  }
 
   try {
     // ── Step 1: Read current header row ──────────────────────────
