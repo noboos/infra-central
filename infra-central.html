@@ -407,7 +407,7 @@ const TABS = [
 // ═══════════════════════════════════════════
 const CFG_KEY = 'ic_config';
 const HARDCODED_CLIENT_ID = '100813116905-jh1u0ro01f12rk5otsc2seornaqig720.apps.googleusercontent.com';
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyzbFaWP1q5zBONj1tvBdKyyTRek1oCpw-iWhjmqrbj0Lb27pYN6wl3dRNVK-2kSYGCeQ/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw2ImUH8JmKJlMpOSIMouvjNhv1HY65imjLhRUYIBV-wUjL3WVpDwjXI5Tojk2Aqeit1Q/exec';
 
 function getConfig() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch { return {}; } }
 function saveConfig() {
@@ -549,32 +549,26 @@ function populateCategories() {
 }
 
 async function syncActiveTab(silent=false) {
-  const cfg = getConfig();
-  if (!cfg.sheetId) { if (!silent) showToast('No Sheet ID configured.', 'error'); return; }
   const tab = activeTab();
   if (tab?.comingSoon) return;
   const icon = document.getElementById('sync-icon');
   icon.classList.add('spinning');
   try {
-    const range = encodeURIComponent(`${tab.sheetTab}!A1:ZZ5000`);
-    const url   = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${range}`;
-    const hdrs  = {};
-    if (currentUser?.accessToken) hdrs['Authorization'] = `Bearer ${currentUser.accessToken}`;
-    else { icon.classList.remove('spinning'); return; } // no token — skip silently
-    const res = await fetch(url, { headers: hdrs });
-    if (!res.ok) throw new Error(`Sheets API ${res.status}`);
-    const data     = await res.json();
-    const allRows  = data.values || [];
-    if (!allRows.length) { if (!silent) showToast('Sheet appears empty.','error'); icon.classList.remove('spinning'); return; }
+    // Read sheet via Apps Script GET — no OAuth token required
+    const url = `${APPS_SCRIPT_URL}?sheetTab=${encodeURIComponent(tab.sheetTab)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Apps Script ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
 
-    // Row 0 = headers (preserve original casing), rest = data
-    const headers  = allRows[0].map(h => h.toString().trim());
-    const dataRows = allRows.slice(1).filter(r => r.some(c => (c||'').toString().trim() !== ''));
+    const headers  = data.headers || [];
+    const rawRows  = data.rows    || [];
+    if (!headers.length) { if (!silent) showToast('Sheet appears empty.', 'error'); icon.classList.remove('spinning'); return; }
 
     headerStore[activeTabId] = headers;
 
-    // Build items: each is a plain object { colName: value, _rowId: string }
-    itemStore[activeTabId] = dataRows.map((row, idx) => {
+    // Build items from rows
+    itemStore[activeTabId] = rawRows.map((row, idx) => {
       const obj = { _rowId: '' };
       headers.forEach((h, i) => { obj[h] = (row[i] || '').toString().trim(); });
       obj._rowId = obj[headers[0]] || `row-${idx}`;
@@ -582,28 +576,27 @@ async function syncActiveTab(silent=false) {
     }).filter(i => i._rowId);
 
     // ── Rebuild responses from sheet Decision columns (sheet = source of truth) ──
-    // This ensures cleared sheet decisions are reflected in the app immediately
-    const decCol  = headers.find(h => h === 'Decision');
-    const byCol   = headers.find(h => h === 'Decision By');
-    const dtCol   = headers.find(h => h === 'Decision Date');
-    const catCol  = headers.find(h => h === 'Category / Reason');
-    const comCol  = headers.find(h => h === 'Comments');
+    const decCol = headers.find(h => h === 'Decision');
+    const byCol  = headers.find(h => h === 'Decision By');
+    const dtCol  = headers.find(h => h === 'Decision Date');
+    const catCol = headers.find(h => h === 'Category / Reason');
+    const comCol = headers.find(h => h === 'Comments');
 
+    const email = currentUser?.email || 'unknown';
+    // Clear existing local responses for this tab
+    Object.keys(responses).forEach(k => {
+      if (k.startsWith(`${email}::${activeTabId}::`)) delete responses[k];
+    });
+    // Rebuild from sheet values
     if (decCol) {
-      // Remove all existing local responses for this tab
-      const email = currentUser?.email || 'unknown';
-      Object.keys(responses).forEach(k => {
-        if (k.startsWith(`${email}::${activeTabId}::`)) delete responses[k];
-      });
-      // Rebuild from sheet data
       itemStore[activeTabId].forEach(item => {
         const decision = item[decCol] || '';
         if (decision) {
           const key = rKey(email, activeTabId, item._rowId);
           responses[key] = {
             decision,
-            reviewer: item[byCol]  || '',
-            timestamp: item[dtCol] ? new Date(item[dtCol]).toISOString() : new Date().toISOString(),
+            reviewer:  item[byCol]  || '',
+            timestamp: item[dtCol]  ? new Date(item[dtCol]).toISOString() : new Date().toISOString(),
             category:  item[catCol] || '',
             comments:  item[comCol] || '',
             rowId:     item._rowId,
@@ -612,9 +605,8 @@ async function syncActiveTab(silent=false) {
           };
         }
       });
-      localStorage.setItem(RESP_KEY, JSON.stringify(responses));
     }
-
+    localStorage.setItem(RESP_KEY, JSON.stringify(responses));
     localStorage.setItem(`ic_items_${activeTabId}`, JSON.stringify({ headers, items: itemStore[activeTabId] }));
     renderAll();
     if (!silent) showToast(`✓ Synced ${itemStore[activeTabId].length} items from "${tab.sheetTab}"`, 'success');
