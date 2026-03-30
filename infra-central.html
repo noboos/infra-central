@@ -438,7 +438,7 @@ function initGoogleOAuth() {
     scope: 'https://www.googleapis.com/auth/spreadsheets',
     // Use fragment redirect instead of popup to avoid COOP/postMessage blocking on GitHub Pages
     ux_mode: 'redirect',
-    redirect_uri: window.location.href.split('?')[0].split('#')[0],
+    redirect_uri: REDIRECT_URI,
     callback: (r) => {
       // This fires in redirect mode after the page reloads with the token in the URL hash
       console.log('[Auth] Token callback fired, access_token:', r.access_token ? 'received' : 'missing', 'error:', r.error);
@@ -495,10 +495,10 @@ function completeLogin() {
   // Build the OAuth URL manually for implicit (token) flow
   const params = new URLSearchParams({
     client_id: HARDCODED_CLIENT_ID,
-    redirect_uri: window.location.href.split('?')[0].split('#')[0],
+    redirect_uri: REDIRECT_URI,
     response_type: 'token',
     scope: 'https://www.googleapis.com/auth/spreadsheets',
-    prompt: 'none', // silent — won't show UI if already granted
+    prompt: 'none',
   });
   window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
@@ -529,7 +529,7 @@ function requestSheetsAccessViaRedirect() {
   }
   const params = new URLSearchParams({
     client_id: HARDCODED_CLIENT_ID,
-    redirect_uri: window.location.href.split('?')[0].split('#')[0],
+    redirect_uri: REDIRECT_URI,
     response_type: 'token',
     scope: 'https://www.googleapis.com/auth/spreadsheets',
     prompt: 'consent',
@@ -704,7 +704,7 @@ function ensureAccessToken() {
   });
 }
 
-// Helper: 1-based column index → A1 column letter (e.g. 1→A, 27→AA)
+const REDIRECT_URI = 'https://noboos.github.io/infra-central/infra-central.html';
 function colLetter(n) {
   let s = '';
   while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
