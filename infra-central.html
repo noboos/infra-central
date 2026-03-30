@@ -407,7 +407,7 @@ const TABS = [
 // ═══════════════════════════════════════════
 const CFG_KEY = 'ic_config';
 const HARDCODED_CLIENT_ID = '100813116905-jh1u0ro01f12rk5otsc2seornaqig720.apps.googleusercontent.com';
-const APPS_SCRIPT_URL = 'https://script.google.com/a/macros/komodohealth.com/s/AKfycbxIeJVyy_ZObgXgOp94fIGtRlDujahgzDdpqEAqMd53Wnze9eeJgesstAX3SJcFez5_CQ/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/a/macros/komodohealth.com/s/AKfycbwisWiI7UjN4S3154nT0SsqLS6idEToL_9Nh9lv4TPnmBj6KlIOzFtdUihpbfgsJGjs9Q/exec';
 
 function getConfig() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch { return {}; } }
 function saveConfig() {
@@ -604,22 +604,28 @@ async function writeResponseToRow(item, decision, category, comments) {
     month:'short', day:'numeric', year:'numeric',
     hour:'numeric', minute:'2-digit', hour12:true
   });
+  const payload = {
+    sheetTab: tab.sheetTab,
+    rowId:    item._rowId,
+    decision,
+    by:       currentUser?.name || 'Unknown',
+    date:     now,
+    category,
+    comments,
+  };
+  console.log('[Sheet] Sending to Apps Script:', payload);
   try {
-    await fetch(APPS_SCRIPT_URL, {
+    const res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sheetTab: tab.sheetTab,
-        rowId:    item._rowId,
-        decision,
-        by:       currentUser?.name || 'Unknown',
-        date:     now,
-        category,
-        comments,
-      }),
+      headers: { 'Content-Type': 'text/plain' }, // text/plain avoids CORS preflight
+      body: JSON.stringify(payload),
     });
-    console.log('[Sheet] Write sent via Apps Script');
+    const text = await res.text();
+    console.log('[Sheet] Apps Script response:', text);
+    try {
+      const json = JSON.parse(text);
+      if (!json.success) showToast(`Sheet error: ${json.error}`, 'error');
+    } catch(e) { /* non-JSON response is fine */ }
   } catch(e) {
     console.error('[Sheet] Apps Script write failed:', e);
     showToast(`Sheet write failed: ${e.message}`, 'error');
