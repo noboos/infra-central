@@ -449,7 +449,7 @@
   <div class="login-card">
     <div class="login-logo">Infra <span>Central</span></div>
     <div class="login-tagline">Infrastructure review · Tracked decisions</div>
-    <div id="g_id_onload" data-client_id="YOUR_GOOGLE_CLIENT_ID" data-callback="handleGoogleSignIn" data-auto_prompt="false"></div>
+    <div id="g_id_onload" data-client_id="100813116905-jh1u0ro01f12rk5otsc2seornaqig720.apps.googleusercontent.com" data-callback="handleGoogleSignIn" data-auto_prompt="false"></div>
     <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="sign_in_with" data-shape="rectangular" data-logo_alignment="left" data-width="280"></div>
     <hr class="login-divider">
     <button class="btn-ghost" onclick="loginDemo()" style="width:100%;padding:9px;">Continue with demo data →</button>
@@ -1294,16 +1294,34 @@ function formatDate(d) {
 // ══════════════════════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════════════════════
+const HARDCODED_CLIENT_ID = '100813116905-jh1u0ro01f12rk5otsc2seornaqig720.apps.googleusercontent.com';
+
 window.addEventListener('load', () => {
   const cfg = getConfig();
-  if (cfg.clientId && cfg.clientId !== 'YOUR_GOOGLE_CLIENT_ID') {
-    document.getElementById('g_id_onload').setAttribute('data-client_id', cfg.clientId);
-    document.getElementById('config-banner').style.display = 'none';
+  // Always use hardcoded client ID — ensures GSI gets the right value
+  const clientId = HARDCODED_CLIENT_ID;
+  document.getElementById('g_id_onload').setAttribute('data-client_id', clientId);
+  document.getElementById('config-banner').style.display = 'none';
+
+  // Pre-populate config with hardcoded client ID if not already set
+  if (!cfg.clientId || cfg.clientId === 'YOUR_GOOGLE_CLIENT_ID') {
+    localStorage.setItem(CFG_KEY, JSON.stringify({
+      ...cfg,
+      clientId,
+    }));
   }
-  if (window.google?.accounts) initGoogleOAuth();
-  else {
+
+  if (window.google?.accounts) {
+    google.accounts.id.initialize({ client_id: clientId, callback: handleGoogleSignIn });
+    google.accounts.id.renderButton(document.querySelector('.g_id_signin'), { type:'standard', size:'large', theme:'outline', text:'sign_in_with', shape:'rectangular', logo_alignment:'left', width:280 });
+    initGoogleOAuth();
+  } else {
     const s = document.querySelector('script[src*="gsi/client"]');
-    if (s) s.addEventListener('load', initGoogleOAuth);
+    if (s) s.addEventListener('load', () => {
+      google.accounts.id.initialize({ client_id: clientId, callback: handleGoogleSignIn });
+      google.accounts.id.renderButton(document.querySelector('.g_id_signin'), { type:'standard', size:'large', theme:'outline', text:'sign_in_with', shape:'rectangular', logo_alignment:'left', width:280 });
+      initGoogleOAuth();
+    });
   }
 });
 </script>
