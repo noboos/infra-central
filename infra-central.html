@@ -118,9 +118,10 @@ tbody tr{border-bottom:1px solid var(--border);transition:background 0.1s;cursor
 tbody tr:last-child{border-bottom:none;}
 tbody tr:hover{background:var(--paper-2);}
 tbody tr.reviewed{background:rgba(26,102,68,0.02);}
+tbody tr.rejected-row{background:rgba(153,31,31,0.02);}
 tbody tr.excepted{background:rgba(90,58,140,0.02);}
 td{padding:11px 14px;vertical-align:middle;color:var(--ink);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-td:last-child{white-space:nowrap;width:1%;} /* decision col stays tight */
+td:last-child{white-space:nowrap;width:1%;vertical-align:top;padding-top:12px;}
 
 /* BADGES */
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:3px 8px;border-radius:999px;font-family:'DM Mono',monospace;white-space:nowrap;}
@@ -694,7 +695,7 @@ async function writeResponseToRow(item, decision, category, comments) {
     let   headers = (hData.values?.[0] || []).map(h => h.toString().trim());
 
     // ── Step 2: Ensure the 4 response columns exist ──────────────
-    const RESP_COLS = ['Decision', 'Decision By', 'Category / Reason', 'Comments'];
+    const RESP_COLS = ['Decision', 'Decision By', 'Decision Date', 'Category / Reason', 'Comments'];
     const missing   = RESP_COLS.filter(c => !headers.includes(c));
     if (missing.length) {
       // Append missing headers to the end of row 1
@@ -718,11 +719,12 @@ async function writeResponseToRow(item, decision, category, comments) {
     const rowNum  = idVals.indexOf(item._rowId) + 1; // 1-based; 0 = not found
     if (!rowNum) throw new Error(`Row not found for ID: ${item._rowId}`);
 
-    // ── Step 4: Write the 4 values into the correct row ──────────
-    const decIdx    = headers.indexOf('Decision')         + 1; // 1-based col index
-    const byIdx     = headers.indexOf('Decision By')      + 1;
-    const catIdx    = headers.indexOf('Category / Reason')+ 1;
-    const comIdx    = headers.indexOf('Comments')         + 1;
+    // ── Step 4: Write the 5 values into the correct row ──────────
+    const decIdx    = headers.indexOf('Decision')          + 1;
+    const byIdx     = headers.indexOf('Decision By')       + 1;
+    const dtIdx     = headers.indexOf('Decision Date')     + 1;
+    const catIdx    = headers.indexOf('Category / Reason') + 1;
+    const comIdx    = headers.indexOf('Comments')          + 1;
 
     // Helper: column index (1-based) → A1 letter
     function colLetter(n) {
@@ -731,10 +733,13 @@ async function writeResponseToRow(item, decision, category, comments) {
       return s;
     }
 
+    const now = new Date().toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true });
+
     // Build individual cell updates as a batch
     const cellUpdates = [
       { range: `${sheetTab}!${colLetter(decIdx)}${rowNum}`, values: [[decision]] },
       { range: `${sheetTab}!${colLetter(byIdx)}${rowNum}`,  values: [[currentUser.name]] },
+      { range: `${sheetTab}!${colLetter(dtIdx)}${rowNum}`,  values: [[now]] },
       { range: `${sheetTab}!${colLetter(catIdx)}${rowNum}`, values: [[category]] },
       { range: `${sheetTab}!${colLetter(comIdx)}${rowNum}`, values: [[comments]] },
     ];
@@ -809,7 +814,8 @@ function renderDynamicFilters() {
 }
 
 function renderTableHeader() {
-  const headers = activeHeaders();
+  const RESP_COLS_SET = new Set(['Decision','Decision By','Decision Date','Category / Reason','Comments']);
+  const headers = activeHeaders().filter(h => !RESP_COLS_SET.has(h));
   const tr = document.querySelector('#table-head tr');
   if (!tr) return;
   if (!headers.length) { tr.innerHTML=`<th>Item</th><th>Your decision</th>`; return; }
@@ -868,22 +874,27 @@ function renderTable() {
   const slice    = items.slice(start, start+PAGE_SIZE);
   const tbody    = document.getElementById('table-body');
   const fCols    = filterableCols();
+  // Filter out the 5 response columns from the table — they show in the panel instead
+  const RESP_COLS_SET = new Set(['Decision','Decision By','Decision Date','Category / Reason','Comments']);
+  const displayHeaders = headers.filter(h => !RESP_COLS_SET.has(h));
   tbody.innerHTML = '';
-  const colCount = Math.max(headers.length, 1) + 1;
+  const colCount = Math.max(displayHeaders.length, 1) + 1;
 
   if (!slice.length) {
     tbody.innerHTML = `<tr><td colspan="${colCount}"><div class="empty-state"><p>📋</p><p>No items match the current filters.</p></div></td></tr>`;
   } else {
     slice.forEach(item => {
       const status = getStatus(item._rowId);
+      const resp   = getMyResponse(item._rowId);
       const tr = document.createElement('tr');
       if (status==='Approved')  tr.classList.add('reviewed');
+      if (status==='Rejected')  tr.classList.add('rejected-row');
       if (status==='Exception') tr.classList.add('excepted');
       tr.onclick = () => openPanel(item._rowId);
 
       let cells = '';
-      if (headers.length) {
-        cells = headers.map(h => {
+      if (displayHeaders.length) {
+        cells = displayHeaders.map(h => {
           const val = item[h] || '';
           if (fCols.includes(h) && val) {
             const c = getColor(val);
@@ -894,7 +905,22 @@ function renderTable() {
       } else {
         cells = `<td>${escHtml(item._rowId)}</td>`;
       }
-      tr.innerHTML = cells + `<td>${statusBadge(status)}</td>`;
+
+      // Decision cell — show badge + reviewer + date if decided
+      let decisionCell = '';
+      if (resp) {
+        const dateStr = resp.timestamp ? new Date(resp.timestamp).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+        decisionCell = `<td>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            ${statusBadge(status)}
+            <span style="font-size:11px;color:var(--ink-3);font-family:'DM Mono',monospace;white-space:nowrap">${escHtml(resp.reviewer)} · ${dateStr}</span>
+          </div>
+        </td>`;
+      } else {
+        decisionCell = `<td>${statusBadge(status)}</td>`;
+      }
+
+      tr.innerHTML = cells + decisionCell;
       tbody.appendChild(tr);
     });
   }
