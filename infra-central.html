@@ -577,10 +577,43 @@ async function syncActiveTab(silent=false) {
     itemStore[activeTabId] = dataRows.map((row, idx) => {
       const obj = { _rowId: '' };
       headers.forEach((h, i) => { obj[h] = (row[i] || '').toString().trim(); });
-      // _rowId = first column value, fallback to row index
       obj._rowId = obj[headers[0]] || `row-${idx}`;
       return obj;
     }).filter(i => i._rowId);
+
+    // ── Rebuild responses from sheet Decision columns (sheet = source of truth) ──
+    // This ensures cleared sheet decisions are reflected in the app immediately
+    const decCol  = headers.find(h => h === 'Decision');
+    const byCol   = headers.find(h => h === 'Decision By');
+    const dtCol   = headers.find(h => h === 'Decision Date');
+    const catCol  = headers.find(h => h === 'Category / Reason');
+    const comCol  = headers.find(h => h === 'Comments');
+
+    if (decCol) {
+      // Remove all existing local responses for this tab
+      const email = currentUser?.email || 'unknown';
+      Object.keys(responses).forEach(k => {
+        if (k.startsWith(`${email}::${activeTabId}::`)) delete responses[k];
+      });
+      // Rebuild from sheet data
+      itemStore[activeTabId].forEach(item => {
+        const decision = item[decCol] || '';
+        if (decision) {
+          const key = rKey(email, activeTabId, item._rowId);
+          responses[key] = {
+            decision,
+            reviewer: item[byCol]  || '',
+            timestamp: item[dtCol] ? new Date(item[dtCol]).toISOString() : new Date().toISOString(),
+            category:  item[catCol] || '',
+            comments:  item[comCol] || '',
+            rowId:     item._rowId,
+            tabId:     activeTabId,
+            email,
+          };
+        }
+      });
+      localStorage.setItem(RESP_KEY, JSON.stringify(responses));
+    }
 
     localStorage.setItem(`ic_items_${activeTabId}`, JSON.stringify({ headers, items: itemStore[activeTabId] }));
     renderAll();
