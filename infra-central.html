@@ -432,41 +432,39 @@ let tokenClient = null;
 
 function handleGoogleSignIn(response) {
   const p = JSON.parse(atob(response.credential.split('.')[1]));
-  // Restore access token from session if available (survives hard refresh)
   const savedToken = sessionStorage.getItem('ic_access_token');
   currentUser = { name: p.name, email: p.email, picture: p.picture, accessToken: savedToken || null };
+  console.log('[Auth] Signed in as', p.email, '| saved token:', savedToken ? 'YES' : 'NO');
   completeLogin();
 }
 
 function initGoogleOAuth() {
   if (!window.google?.accounts?.oauth2) return;
+  if (tokenClient) return; // already initialized
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: HARDCODED_CLIENT_ID,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
     callback: (r) => {
+      console.log('[Auth] Token callback fired, access_token:', r.access_token ? 'received' : 'missing', 'error:', r.error);
       if (r.access_token && currentUser) {
         currentUser.accessToken = r.access_token;
-        // Persist token for the duration of this browser session
         sessionStorage.setItem('ic_access_token', r.access_token);
+        console.log('[Auth] Token saved to sessionStorage');
         const btn = document.getElementById('grant-btn');
         if (btn) btn.style.display = 'none';
         syncActiveTab(false);
+      } else if (r.error) {
+        console.warn('[Auth] Token error:', r.error);
+        showGrantButton();
       }
     },
   });
+  console.log('[Auth] tokenClient initialized');
 }
 
 function loginDemo() {
   currentUser = { name: 'Demo User', email: 'demo@local', picture: null, demo: true };
   completeLogin();
-}
-
-function requestSheetsToken() {
-  // Use prompt:'' first — silently reuses existing grant if already approved
-  // Falls back to showing consent UI if not yet granted
-  if (tokenClient) {
-    tokenClient.requestAccessToken({ prompt: '' });
-  }
 }
 
 function completeLogin() {
@@ -483,23 +481,39 @@ function completeLogin() {
   initTabs();
   loadTabData(activeTabId);
 
-  // Request Sheets token — retry until tokenClient is ready (GSI loads async)
+  if (currentUser.demo) return;
+
+  // Already have a token — use it directly, no popup needed
+  if (currentUser.accessToken) {
+    console.log('[Auth] Token already available, skipping OAuth prompt');
+    syncActiveTab(false);
+    return;
+  }
+
+  // Need to get a token — wait for tokenClient to be ready then request silently
+  console.log('[Auth] No token yet, requesting...');
   let attempts = 0;
   const tryToken = () => {
-    if (currentUser?.demo) return; // skip for demo mode
+    // Make sure tokenClient is initialized
+    initGoogleOAuth();
     if (tokenClient) {
-      requestSheetsToken();
-    } else if (attempts++ < 20) {
-      setTimeout(tryToken, 300); // retry every 300ms, up to 6 seconds
+      console.log('[Auth] Requesting token with prompt:""');
+      tokenClient.requestAccessToken({ prompt: '' });
+    } else if (attempts++ < 30) {
+      setTimeout(tryToken, 200);
     } else {
-      // tokenClient never became ready — show manual grant button
+      console.warn('[Auth] tokenClient never ready after 6s');
       showGrantButton();
     }
   };
   tryToken();
 }
 
-function signOut() { currentUser = null; sessionStorage.removeItem('ic_access_token'); location.reload(); }
+function signOut() {
+  currentUser = null;
+  sessionStorage.removeItem('ic_access_token');
+  location.reload();
+}
 
 function showGrantButton() {
   // Show a persistent button in the header if the token was never granted
