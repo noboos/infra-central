@@ -688,10 +688,17 @@ function ensureAccessToken() {
 async function writeResponseToRow(item, decision, category, comments) {
   const cfg = getConfig();
   if (!cfg.sheetId || !currentUser?.accessToken) return;
-  const tab   = activeTab();
+  const tab      = activeTab();
   const sheetTab = tab.sheetTab;
   const authHdr  = { 'Authorization': `Bearer ${currentUser.accessToken}`, 'Content-Type': 'application/json' };
   const baseUrl  = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}`;
+
+  // Helper: 1-based column index → A1 column letter (e.g. 1→A, 27→AA)
+  function colLetter(n) {
+    let s = '';
+    while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
+    return s;
+  }
 
   try {
     // ── Step 1: Read current header row ──────────────────────────
@@ -705,12 +712,7 @@ async function writeResponseToRow(item, decision, category, comments) {
     const RESP_COLS = ['Decision', 'Decision By', 'Decision Date', 'Category / Reason', 'Comments'];
     const missing   = RESP_COLS.filter(c => !headers.includes(c));
     if (missing.length) {
-      // Write only the missing headers into new columns at the end — never overwrite existing data
-      function colLetter(n) {
-        let s = '';
-        while (n > 0) { n--; s = String.fromCharCode(65 + n % 26) + s; n = Math.floor(n / 26); }
-        return s;
-      }
+      // Write only the missing headers into new columns at the end
       const headerUpdates = missing.map((col, i) => ({
         range: `${sheetTab}!${colLetter(headers.length + i + 1)}1`,
         values: [[col]],
