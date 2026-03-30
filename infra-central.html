@@ -407,6 +407,8 @@ const TABS = [
 // ═══════════════════════════════════════════
 const CFG_KEY = 'ic_config';
 const HARDCODED_CLIENT_ID = '100813116905-jh1u0ro01f12rk5otsc2seornaqig720.apps.googleusercontent.com';
+const APPS_SCRIPT_URL = 'https://script.google.com/a/macros/komodohealth.com/s/AKfycbxIeJVyy_ZObgXgOp94fIGtRlDujahgzDdpqEAqMd53Wnze9eeJgesstAX3SJcFez5_CQ/exec';
+const REDIRECT_URI = 'https://noboos.github.io/infra-central/infra-central.html';
 
 function getConfig() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch { return {}; } }
 function saveConfig() {
@@ -711,84 +713,31 @@ function colLetter(n) {
   return s;
 }
 
-// Write response back to the item's own row in the sheet.
-// Ensures the 5 response columns exist in the header row, then writes to the correct row.
+// Write response via Apps Script — no OAuth token required
 async function writeResponseToRow(item, decision, category, comments) {
-  const cfg = getConfig();
-  if (!cfg.sheetId || !currentUser?.accessToken) return;
-  const tab      = activeTab();
-  const sheetTab = tab.sheetTab;
-  const authHdr  = { 'Authorization': `Bearer ${currentUser.accessToken}`, 'Content-Type': 'application/json' };
-  const baseUrl  = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}`;
-
+  const tab = activeTab();
+  const now = new Date().toLocaleString('en-US', {
+    month:'short', day:'numeric', year:'numeric',
+    hour:'numeric', minute:'2-digit', hour12:true
+  });
   try {
-    // ── Step 1: Read current header row ──────────────────────────
-    const hRange = encodeURIComponent(`${sheetTab}!1:1`);
-    const hRes   = await fetch(`${baseUrl}/values/${hRange}`, { headers: authHdr });
-    if (!hRes.ok) throw new Error(`Header read failed: ${hRes.status}`);
-    const hData  = await hRes.json();
-    let   headers = (hData.values?.[0] || []).map(h => h.toString().trim());
-
-    // ── Step 2: Ensure the 5 response columns exist ──────────────
-    const RESP_COLS = ['Decision', 'Decision By', 'Decision Date', 'Category / Reason', 'Comments'];
-    const missing   = RESP_COLS.filter(c => !headers.includes(c));
-    if (missing.length) {
-      // Write only the missing headers into new columns at the end
-      const headerUpdates = missing.map((col, i) => ({
-        range: `${sheetTab}!${colLetter(headers.length + i + 1)}1`,
-        values: [[col]],
-      }));
-      await fetch(`${baseUrl}/values:batchUpdate`, {
-        method: 'POST',
-        headers: authHdr,
-        body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: headerUpdates }),
-      });
-      headers = [...headers, ...missing];
-    }
-
-    // ── Step 3: Find the row number for this item ────────────────
-    // Read the first column (ID column) to find the matching row
-    const idCol   = encodeURIComponent(`${sheetTab}!A:A`);
-    const idRes   = await fetch(`${baseUrl}/values/${idCol}`, { headers: authHdr });
-    if (!idRes.ok) throw new Error(`Row lookup failed: ${idRes.status}`);
-    const idData  = await idRes.json();
-    const idVals  = (idData.values || []).map(r => (r[0]||'').toString().trim());
-    const rowNum  = idVals.indexOf(item._rowId) + 1; // 1-based; 0 = not found
-    if (!rowNum) throw new Error(`Row not found for ID: ${item._rowId}`);
-
-    // ── Step 4: Write the 5 values into the correct row ──────────
-    const decIdx = headers.indexOf('Decision')          + 1;
-    const byIdx  = headers.indexOf('Decision By')       + 1;
-    const dtIdx  = headers.indexOf('Decision Date')     + 1;
-    const catIdx = headers.indexOf('Category / Reason') + 1;
-    const comIdx = headers.indexOf('Comments')          + 1;
-
-    const now = new Date().toLocaleString('en-US', {
-      month:'short', day:'numeric', year:'numeric',
-      hour:'numeric', minute:'2-digit', hour12:true
-    });
-
-    const cellUpdates = [
-      { range: `${sheetTab}!${colLetter(decIdx)}${rowNum}`, values: [[decision]] },
-      { range: `${sheetTab}!${colLetter(byIdx)}${rowNum}`,  values: [[currentUser.name]] },
-      { range: `${sheetTab}!${colLetter(dtIdx)}${rowNum}`,  values: [[now]] },
-      { range: `${sheetTab}!${colLetter(catIdx)}${rowNum}`, values: [[category]] },
-      { range: `${sheetTab}!${colLetter(comIdx)}${rowNum}`, values: [[comments]] },
-    ];
-
-    console.log('Writing to sheet:', { rowNum, cellUpdates });
-    const writeRes = await fetch(`${baseUrl}/values:batchUpdate`, {
+    await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
-      headers: authHdr,
-      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: cellUpdates }),
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sheetTab: tab.sheetTab,
+        rowId:    item._rowId,
+        decision,
+        by:       currentUser?.name || 'Unknown',
+        date:     now,
+        category,
+        comments,
+      }),
     });
-    if (!writeRes.ok) {
-      const err = await writeRes.json();
-      throw new Error(`batchUpdate failed ${writeRes.status}: ${JSON.stringify(err)}`);
-    }
-
+    console.log('[Sheet] Write sent via Apps Script');
   } catch(e) {
-    console.error('Sheet write failed:', e);
+    console.error('[Sheet] Apps Script write failed:', e);
     showToast(`Sheet write failed: ${e.message}`, 'error');
   }
 }
@@ -1078,30 +1027,22 @@ async function submitReview() {
   const btn=document.getElementById('submit-btn');
   btn.disabled=true; btn.textContent='Saving…';
 
-  // Capture all values immediately — currentItem can become null after async awaits
   const item     = currentItem;
   const decision = panelDecision;
   const category = document.getElementById('field-category').value;
   const comments  = document.getElementById('field-comments').value.trim();
 
+  // Save locally first
   const record = { decision, category, comments, reviewer:currentUser?.name||'Unknown', email:currentUser?.email||'unknown', timestamp:new Date().toISOString(), rowId:item._rowId, tabId:activeTabId };
   responses[rKey(record.email, activeTabId, record.rowId)] = record;
   localStorage.setItem(RESP_KEY, JSON.stringify(responses));
 
-  // Ensure we have a valid access token before writing to sheet
-  await ensureAccessToken();
+  // Write to sheet via Apps Script (no OAuth needed)
+  await writeResponseToRow(item, decision, category, comments);
 
-  if (currentUser?.accessToken) {
-    await writeResponseToRow(item, decision, category, comments);
-    renderAll();
-    closePanel();
-    showToast(`✓ ${item._rowId} marked ${decision} — saved to sheet`, 'success');
-  } else {
-    renderAll();
-    closePanel();
-    showToast(`✓ Saved locally. Grant Sheets access to sync to the sheet.`, '');
-    showGrantButton();
-  }
+  renderAll();
+  closePanel();
+  showToast(`✓ ${item._rowId} marked ${decision} — saved to sheet`, 'success');
 
   btn.disabled=false;
   btn.innerHTML='Save response <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><path d="M2 6.5h9M7.5 3l3.5 3.5L7.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
