@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Infra Central</title>
+<title>Infra Central v2</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
@@ -408,7 +408,6 @@ const TABS = [
 const CFG_KEY = 'ic_config';
 const HARDCODED_CLIENT_ID = '100813116905-jh1u0ro01f12rk5otsc2seornaqig720.apps.googleusercontent.com';
 const APPS_SCRIPT_URL = 'https://script.google.com/a/macros/komodohealth.com/s/AKfycbxIeJVyy_ZObgXgOp94fIGtRlDujahgzDdpqEAqMd53Wnze9eeJgesstAX3SJcFez5_CQ/exec';
-const REDIRECT_URI = 'https://noboos.github.io/infra-central/infra-central.html';
 
 function getConfig() { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch { return {}; } }
 function saveConfig() {
